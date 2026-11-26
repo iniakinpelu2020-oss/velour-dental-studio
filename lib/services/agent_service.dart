@@ -32,8 +32,13 @@ class AgentService {
   static const Set<String> silentTools = {
     'read_notifications',
     'reply_notification',
+    'make_call',
+    'send_sms',
+    'open_whatsapp_chat',
     'set_alarm',
     'save_note',
+    'read_notes',
+    'manage_booking',
   };
   static const Set<String> screenTools = {
     'open_app',
@@ -100,23 +105,30 @@ class AgentService {
       final workerUrl = await SettingsService.getWorkerUrl();
       final authToken = await SettingsService.getAuthToken();
       final modelId = await SettingsService.getModelId();
+      final customEndpoint = await SettingsService.getCustomLlmEndpoint();
+      final memoryEnabled = await SettingsService.getMemoryEnabled();
 
-      if (workerUrl.isEmpty || authToken.isEmpty) {
+      final endpoint = customEndpoint.isNotEmpty ? customEndpoint : workerUrl;
+      if (endpoint.isEmpty || authToken.isEmpty) {
         onLog(AgentStep(
           type: AgentStepType.error,
           title: 'Missing configuration',
-          detail: 'Set the Worker URL and Bearer Secret Token in Settings.',
+          detail: 'Set the Worker URL (or custom LLM endpoint) and Bearer Secret Token in Settings.',
         ));
         return;
       }
 
-      final uri = _buildAgentUri(workerUrl);
+      final uri = _buildAgentUri(endpoint);
       final payload = <String, dynamic>{
         'messages': _messages.map((m) => m.toJson()).toList(),
         'model': modelId,
       };
       if (lastScreenState != null && lastScreenState.isNotEmpty) {
         payload['screenState'] = lastScreenState;
+      }
+      if (memoryEnabled) {
+        payload['memory'] = await SettingsService.getMemorySnapshot();
+        payload['memoryKey'] = 'default';
       }
 
       onLog(AgentStep(
@@ -171,6 +183,13 @@ class AgentService {
         return;
       }
 
+      // Persist memory snapshot if returned
+      if (memoryEnabled && body['memory'] is Map) {
+        await SettingsService.saveMemorySnapshot(
+          (body['memory'] as Map).map((k, v) => MapEntry(k.toString(), v)),
+        );
+      }
+
       final type = body['type']?.toString() ?? '';
       if (type == 'final') {
         final msg = body['message']?.toString() ?? 'Done.';
@@ -198,7 +217,6 @@ class AgentService {
         return;
       }
 
-      // Record assistant tool_call message
       _messages.add(AgentMessage(
         role: 'assistant',
         content: assistantMessage,
@@ -298,7 +316,6 @@ class AgentService {
 
       if (screenStateDirty) {
         lastScreenState = await PlatformService.getScreenStateJson();
-        // Truncate large screen state for the model
         if (lastScreenState.length > 12000) {
           lastScreenState = lastScreenState.substring(0, 12000);
         }
@@ -315,7 +332,6 @@ class AgentService {
   Uri _buildAgentUri(String workerUrl) {
     final trimmed = workerUrl.trim();
     final base = Uri.parse(trimmed);
-    // If user provided a base URL without path or with /, post to it; if it already has /auto-reply, strip.
     if (base.path.isEmpty || base.path == '/') {
       return base.replace(path: '/');
     }
@@ -359,7 +375,6 @@ class AgentService {
   }
 
   List<_ToolCall> _orderToolCalls(List<_ToolCall> calls) {
-    // Silent-first routing: silent tools, then control (ask_confirmation/done), then screen tools.
     int rank(String name) {
       if (silentTools.contains(name)) return 0;
       if (name == 'ask_confirmation' || name == 'done') return 1;
@@ -393,6 +408,25 @@ class AgentService {
           }
           final ok = await PlatformService.replyToNotification(notificationKey: key, message: message);
           return {'ok': ok};
+        case 'make_call':
+          final phoneNumber = tc.args['phoneNumber']?.toString() ?? '';
+          if (phoneNumber.isEmpty) return {'ok': false, 'error': 'phoneNumber is required'};
+          final ok = await PlatformService.makeCall(phoneNumber);
+          return {'ok': ok, 'phoneNumber': phoneNumber};
+        case 'send_sms':
+          final phoneNumber = tc.args['phoneNumber']?.toString() ?? '';
+          final message = tc.args['message']?.toString() ?? '';
+          if (phoneNumber.isEmpty || message.isEmpty) {
+            return {'ok': false, 'error': 'phoneNumber and message are required'};
+          }
+          final ok = await PlatformService.sendSms(phoneNumber: phoneNumber, message: message);
+          return {'ok': ok, 'phoneNumber': phoneNumber};
+        case 'open_whatsapp_chat':
+          final phoneNumber = tc.args['phoneNumber']?.toString() ?? '';
+          final message = tc.args['message']?.toString() ?? '';
+          if (phoneNumber.isEmpty) return {'ok': false, 'error': 'phoneNumber is required'};
+          final ok = await PlatformService.openWhatsAppChat(phoneNumber: phoneNumber, message: message);
+          return {'ok': ok, 'phoneNumber': phoneNumber};
         case 'set_alarm':
           final hour = _asInt(tc.args['hour']);
           final minute = _asInt(tc.args['minute']);
@@ -409,7 +443,28 @@ class AgentService {
             return {'ok': false, 'error': 'title and content are required'};
           }
           final ok = await PlatformService.saveNote(title: title, content: content);
+          // Also mirror into persistent memory notes
+          await _appendMemoryNote(title, content);
           return {'ok': ok};
+        case 'read_notes':
+          final limit = (_asInt(tc.args['limit']) ?? 20).clamp(1, 100);
+          final query = tc.args['query']?.toString().toLowerCase().trim() ?? '';
+          final nativeJson = await PlatformService.getNotes();
+          final nativeNotes = _decodeJsonList(nativeJson);
+          final memoryNotes = await SettingsService.getMemoryNotes();
+          final merged = <Map<String, dynamic>>[];
+          merged.addAll(nativeNotes);
+          merged.addAll(memoryNotes);
+          final filtered = merged.where((n) {
+            if (query.isEmpty) return true;
+            final title = n['title']?.toString().toLowerCase() ?? '';
+            final content = n['content']?.toString().toLowerCase() ?? '';
+            return title.contains(query) || content.contains(query);
+          }).toList();
+          final limited = filtered.length > limit ? filtered.sublist(filtered.length - limit) : filtered;
+          return {'ok': true, 'notes': limited};
+        case 'manage_booking':
+          return await _manageBooking(tc.args);
         case 'open_app':
           final packageOrName = tc.args['packageOrName']?.toString() ??
               tc.args['package']?.toString() ??
@@ -445,6 +500,130 @@ class AgentService {
     } catch (e) {
       return {'ok': false, 'error': e.toString()};
     }
+  }
+
+  Future<void> _appendMemoryNote(String title, String content) async {
+    if (!await SettingsService.getMemoryEnabled()) return;
+    final notes = await SettingsService.getMemoryNotes();
+    notes.add({
+      'id': DateTime.now().millisecondsSinceEpoch.toString(),
+      'title': title,
+      'content': content,
+      'createdAt': DateTime.now().toIso8601String(),
+    });
+    if (notes.length > 200) {
+      notes.removeRange(0, notes.length - 200);
+    }
+    await SettingsService.setMemoryNotes(notes);
+  }
+
+  Future<Map<String, dynamic>> _manageBooking(Map<String, dynamic> args) async {
+    final action = args['action']?.toString().toLowerCase().trim() ?? '';
+    final bookings = await SettingsService.getMemoryBookings();
+
+    if (action == 'list') {
+      final query = args['query']?.toString().toLowerCase().trim() ?? '';
+      final filtered = bookings.where((b) {
+        if (query.isEmpty) return true;
+        final haystack = [
+          b['clientName'],
+          b['phoneNumber'],
+          b['service'],
+          b['dateTime'],
+          b['status'],
+          b['notes'],
+        ].map((e) => e?.toString().toLowerCase() ?? '').join(' ');
+        return haystack.contains(query);
+      }).toList();
+      return {'ok': true, 'bookings': filtered};
+    }
+
+    if (action == 'create') {
+      final booking = {
+        'id': 'bk_${DateTime.now().millisecondsSinceEpoch}',
+        'clientName': args['clientName']?.toString().trim() ?? '',
+        'phoneNumber': args['phoneNumber']?.toString().trim() ?? '',
+        'service': args['service']?.toString().trim() ?? '',
+        'dateTime': args['dateTime']?.toString().trim() ?? '',
+        'status': args['status']?.toString().trim().isNotEmpty == true
+            ? args['status'].toString().trim()
+            : 'pending',
+        'notes': args['notes']?.toString().trim() ?? '',
+        'createdAt': DateTime.now().toIso8601String(),
+        'updatedAt': DateTime.now().toIso8601String(),
+      };
+      bookings.add(booking);
+      await SettingsService.setMemoryBookings(bookings);
+      await _upsertMemoryContact(booking['clientName'].toString(), booking['phoneNumber'].toString());
+      return {'ok': true, 'booking': booking, 'bookings': bookings};
+    }
+
+    if (action == 'update' || action == 'cancel') {
+      final bookingId = args['bookingId']?.toString().trim() ?? '';
+      final index = bookings.indexWhere((b) => b['id']?.toString() == bookingId);
+      if (index < 0) {
+        return {'ok': false, 'error': 'Booking not found', 'bookingId': bookingId};
+      }
+      final existing = Map<String, dynamic>.from(bookings[index]);
+      if (action == 'cancel') {
+        existing['status'] = 'cancelled';
+      } else {
+        if (args['clientName'] != null) existing['clientName'] = args['clientName'].toString().trim();
+        if (args['phoneNumber'] != null) existing['phoneNumber'] = args['phoneNumber'].toString().trim();
+        if (args['service'] != null) existing['service'] = args['service'].toString().trim();
+        if (args['dateTime'] != null) existing['dateTime'] = args['dateTime'].toString().trim();
+        if (args['status'] != null) existing['status'] = args['status'].toString().trim();
+        if (args['notes'] != null) existing['notes'] = args['notes'].toString().trim();
+      }
+      existing['updatedAt'] = DateTime.now().toIso8601String();
+      bookings[index] = existing;
+      await SettingsService.setMemoryBookings(bookings);
+      await _upsertMemoryContact(
+        existing['clientName']?.toString() ?? '',
+        existing['phoneNumber']?.toString() ?? '',
+      );
+      return {'ok': true, 'booking': existing, 'bookings': bookings};
+    }
+
+    return {'ok': false, 'error': 'Unsupported booking action: $action'};
+  }
+
+  Future<void> _upsertMemoryContact(String name, String phone) async {
+    final n = name.trim();
+    final p = phone.trim();
+    if (n.isEmpty && p.isEmpty) return;
+    final contacts = await SettingsService.getMemoryContacts();
+    final idx = contacts.indexWhere((c) {
+      final cp = c['phoneNumber']?.toString().trim() ?? '';
+      final cn = c['name']?.toString().trim().toLowerCase() ?? '';
+      if (p.isNotEmpty && cp.isNotEmpty) return cp == p;
+      if (n.isNotEmpty && cn.isNotEmpty) return cn == n.toLowerCase();
+      return false;
+    });
+    final entry = {
+      'name': n,
+      'phoneNumber': p,
+      'updatedAt': DateTime.now().toIso8601String(),
+    };
+    if (idx >= 0) {
+      contacts[idx] = {...contacts[idx], ...entry};
+    } else {
+      contacts.add(entry);
+    }
+    await SettingsService.setMemoryContacts(contacts);
+  }
+
+  List<Map<String, dynamic>> _decodeJsonList(String json) {
+    try {
+      final decoded = jsonDecode(json);
+      if (decoded is List) {
+        return decoded
+            .whereType<Map>()
+            .map((e) => e.map((k, v) => MapEntry(k.toString(), v)))
+            .toList();
+      }
+    } catch (_) {}
+    return [];
   }
 
   int? _asInt(dynamic value) {

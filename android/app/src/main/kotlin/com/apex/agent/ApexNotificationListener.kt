@@ -37,6 +37,7 @@ class ApexNotificationListener : NotificationListenerService() {
         val packageName: String,
         val appName: String,
         val senderName: String,
+        val senderPhone: String,
         val messageText: String,
         val isGroup: Boolean,
         val timestamp: Long,
@@ -48,6 +49,7 @@ class ApexNotificationListener : NotificationListenerService() {
         val notificationKey: String,
         val packageName: String,
         val senderName: String,
+        val senderPhone: String,
         val replyText: String,
     )
 
@@ -99,6 +101,7 @@ class ApexNotificationListener : NotificationListenerService() {
                     put("packageName", n.packageName)
                     put("appName", n.appName)
                     put("senderName", n.senderName)
+                    put("senderPhone", n.senderPhone)
                     put("messageText", n.messageText)
                     put("isGroup", n.isGroup)
                     put("timestamp", n.timestamp)
@@ -125,6 +128,7 @@ class ApexNotificationListener : NotificationListenerService() {
                         "type" to "approved_sent",
                         "packageName" to pending.packageName,
                         "senderName" to pending.senderName,
+                        "senderPhone" to pending.senderPhone,
                         "reply" to pending.replyText,
                         "timestamp" to System.currentTimeMillis().toString(),
                     )
@@ -144,6 +148,7 @@ class ApexNotificationListener : NotificationListenerService() {
                         "type" to "dismissed",
                         "packageName" to pending.packageName,
                         "senderName" to pending.senderName,
+                        "senderPhone" to pending.senderPhone,
                         "reply" to pending.replyText,
                         "timestamp" to System.currentTimeMillis().toString(),
                     )
@@ -173,6 +178,15 @@ class ApexNotificationListener : NotificationListenerService() {
                 }
                 Prefs.putJsonArray(context, Prefs.AUTO_REPLY_HISTORY_JSON, trimmed)
             }
+        }
+
+        fun normalizePhone(phone: String): String {
+            val trimmed = phone.trim()
+            if (trimmed.isEmpty()) return ""
+            val hasPlus = trimmed.startsWith("+")
+            val digits = trimmed.filter { it.isDigit() }
+            if (digits.isEmpty()) return ""
+            return if (hasPlus) "+$digits" else digits
         }
     }
 
@@ -208,6 +222,7 @@ class ApexNotificationListener : NotificationListenerService() {
 
         val appName = resolveAppName(sbn.packageName)
         val senderName = extractSenderName(extras, sbn)
+        val senderPhone = extractSenderPhone(extras, senderName)
         val messageText = extractMessageText(notification, extras)
         val isGroup = extractIsGroup(notification, extras)
         val hasReplyAction = findReplyAction(notification) != null
@@ -219,6 +234,7 @@ class ApexNotificationListener : NotificationListenerService() {
             packageName = sbn.packageName,
             appName = appName,
             senderName = senderName,
+            senderPhone = senderPhone,
             messageText = messageText,
             isGroup = isGroup,
             timestamp = sbn.postTime,
@@ -232,7 +248,7 @@ class ApexNotificationListener : NotificationListenerService() {
         if (!hasReplyAction) return
 
         // Anti-duplicate
-        val dedupeKey = "${record.packageName}|${record.senderName}|${record.messageText}".lowercase()
+        val dedupeKey = "${record.packageName}|${record.senderName}|${record.senderPhone}|${record.messageText}".lowercase()
         val now = System.currentTimeMillis()
         pruneDedupe(now)
         val lastSeen = recentKeys.putIfAbsent(dedupeKey, now)
@@ -255,6 +271,7 @@ class ApexNotificationListener : NotificationListenerService() {
                     "packageName" to record.packageName,
                     "appName" to record.appName,
                     "senderName" to record.senderName,
+                    "senderPhone" to record.senderPhone,
                     "message" to record.messageText,
                     "timestamp" to now.toString(),
                 )
@@ -263,8 +280,8 @@ class ApexNotificationListener : NotificationListenerService() {
         }
         if (appMode != "auto_reply") return
 
-        // Contact allow/block/off
-        if (!isContactAllowed(record.senderName, record.packageName)) {
+        // Contact/phone allow/block/off
+        if (!isContactAllowed(record.senderName, record.senderPhone, record.packageName)) {
             appendHistory(
                 this,
                 mapOf(
@@ -272,6 +289,7 @@ class ApexNotificationListener : NotificationListenerService() {
                     "packageName" to record.packageName,
                     "appName" to record.appName,
                     "senderName" to record.senderName,
+                    "senderPhone" to record.senderPhone,
                     "message" to record.messageText,
                     "timestamp" to now.toString(),
                 )
@@ -281,7 +299,7 @@ class ApexNotificationListener : NotificationListenerService() {
 
         // Cooldown per sender
         val cooldownSec = Prefs.getInt(this, Prefs.COOLDOWN_SECONDS, 60).coerceAtLeast(0)
-        val senderKey = senderKey(record.packageName, record.senderName)
+        val senderKey = senderKey(record.packageName, record.senderName, record.senderPhone)
         val lastReplyAt = senderLastReplyAt[senderKey] ?: 0L
         if (cooldownSec > 0 && now - lastReplyAt < cooldownSec * 1000L) {
             appendHistory(
@@ -291,6 +309,7 @@ class ApexNotificationListener : NotificationListenerService() {
                     "packageName" to record.packageName,
                     "appName" to record.appName,
                     "senderName" to record.senderName,
+                    "senderPhone" to record.senderPhone,
                     "message" to record.messageText,
                     "timestamp" to now.toString(),
                 )
@@ -312,6 +331,7 @@ class ApexNotificationListener : NotificationListenerService() {
                     "packageName" to record.packageName,
                     "appName" to record.appName,
                     "senderName" to record.senderName,
+                    "senderPhone" to record.senderPhone,
                     "message" to record.messageText,
                     "timestamp" to now.toString(),
                 )
@@ -344,31 +364,63 @@ class ApexNotificationListener : NotificationListenerService() {
         }
     }
 
-    private fun senderKey(packageName: String, senderName: String): String {
-        return "${packageName.lowercase()}|${senderName.lowercase()}"
+    private fun senderKey(packageName: String, senderName: String, senderPhone: String): String {
+        val id = normalizePhone(senderPhone).ifEmpty { senderName.trim().lowercase() }
+        return "${packageName.lowercase()}|$id"
     }
 
-    private fun isContactAllowed(senderName: String, packageName: String): Boolean {
+    private fun normalizeForMatch(value: String): String {
+        val trimmed = value.trim().lowercase()
+        val phone = normalizePhone(trimmed)
+        return phone.ifEmpty { trimmed }
+    }
+
+    private fun contactMatches(entry: String, senderName: String, senderPhone: String, packageName: String): Boolean {
+        val e = entry.trim()
+        if (e.isEmpty()) return false
+        val eNorm = normalizeForMatch(e)
+        val nameNorm = senderName.trim().lowercase()
+        val phoneNorm = normalizePhone(senderPhone).lowercase()
+        val senderKeyFull = "${packageName.lowercase()}|$nameNorm"
+        val senderPhoneKey = "${packageName.lowercase()}|$phoneNorm"
+
+        if (eNorm.isEmpty()) return false
+        if (eNorm == nameNorm) return true
+        if (phoneNorm.isNotEmpty() && eNorm == phoneNorm) return true
+        if (e.trim().lowercase() == senderKeyFull) return true
+        if (phoneNorm.isNotEmpty() && e.trim().lowercase() == senderPhoneKey) return true
+        return false
+    }
+
+    private fun isContactAllowed(senderName: String, senderPhone: String, packageName: String): Boolean {
         val senderLower = senderName.trim().lowercase()
+        val phoneNorm = normalizePhone(senderPhone).lowercase()
         val senderKeyFull = "${packageName.lowercase()}|$senderLower"
+        val senderPhoneKey = if (phoneNorm.isNotEmpty()) "${packageName.lowercase()}|$phoneNorm" else ""
 
         val contactModes = Prefs.getJsonObject(this, Prefs.CONTACT_MODES_JSON)
-        val contactMode = when {
-            contactModes.has(senderKeyFull) -> contactModes.optString(senderKeyFull, "")
-            contactModes.has(senderLower) -> contactModes.optString(senderLower, "")
-            else -> ""
+        val modeCandidates = listOf(senderKeyFull, senderLower, senderPhoneKey, phoneNorm).filter { it.isNotEmpty() }
+        var contactMode = ""
+        for (candidate in modeCandidates) {
+            if (contactModes.has(candidate)) {
+                contactMode = contactModes.optString(candidate, "")
+                if (contactMode.isNotEmpty()) break
+            }
         }
+
         if (contactMode.equals("off", ignoreCase = true) || contactMode.equals("block", ignoreCase = true)) {
             return false
         }
         if (contactMode.equals("allow", ignoreCase = true)) return true
 
-        val allowlist = Prefs.getStringList(this, Prefs.ALLOWLIST_JSON).map { it.lowercase() }
-        val blocklist = Prefs.getStringList(this, Prefs.BLOCKLIST_JSON).map { it.lowercase() }
+        val allowlist = Prefs.getStringList(this, Prefs.ALLOWLIST_JSON)
+        val blocklist = Prefs.getStringList(this, Prefs.BLOCKLIST_JSON)
 
-        if (senderLower in blocklist || senderKeyFull in blocklist) return false
+        val blocked = blocklist.any { contactMatches(it, senderName, senderPhone, packageName) }
+        if (blocked) return false
+
         if (allowlist.isNotEmpty()) {
-            return senderLower in allowlist || senderKeyFull in allowlist
+            return allowlist.any { contactMatches(it, senderName, senderPhone, packageName) }
         }
         return true
     }
@@ -403,6 +455,48 @@ class ApexNotificationListener : NotificationListenerService() {
         if (title.isNotEmpty()) return title
         if (convTitle.isNotEmpty()) return convTitle
         return sbn.packageName
+    }
+
+    private fun extractSenderPhone(extras: Bundle, senderName: String): String {
+        // Try common extras keys.
+        val keys = listOf(
+            "android.senderPhoneNumber",
+            "sender_phone",
+            "senderPhone",
+            "phone",
+            "phoneNumber",
+            "address",
+        )
+        for (k in keys) {
+            try {
+                val v = extras.getCharSequence(k)?.toString()?.trim().orEmpty()
+                val normalized = normalizePhone(v)
+                if (normalized.length >= 7) return normalized
+            } catch (_: Throwable) {
+            }
+        }
+
+        // Try to extract from sender name/title if it contains a phone number.
+        val fromName = extractPhoneFromText(senderName)
+        if (fromName.isNotEmpty()) return fromName
+
+        // Try EXTRA_TEXT for patterns like "+1 555..." (best effort).
+        try {
+            val text = extras.getCharSequence(Notification.EXTRA_TEXT)?.toString().orEmpty()
+            val fromText = extractPhoneFromText(text)
+            if (fromText.isNotEmpty()) return fromText
+        } catch (_: Throwable) {
+        }
+
+        return ""
+    }
+
+    private fun extractPhoneFromText(text: String): String {
+        if (text.isBlank()) return ""
+        val regex = Regex("(\\+?\\d[\\d\\s().-]{6,}\\d)")
+        val match = regex.find(text) ?: return ""
+        val normalized = normalizePhone(match.value)
+        return if (normalized.length >= 7) normalized else ""
     }
 
     private fun extractMessageText(notification: Notification, extras: Bundle): String {
@@ -478,9 +572,11 @@ class ApexNotificationListener : NotificationListenerService() {
             }
             RemoteInput.addResultsToIntent(remoteInputs, intent, bundle)
             action.actionIntent.send(this, 0, intent)
-            val senderKey = senderKey(sbn.packageName, extractSenderName(notification.extras ?: Bundle(), sbn))
-            senderLastReplyAt[senderKey] = System.currentTimeMillis()
-            senderConsecutiveReplies.getOrPut(senderKey) { AtomicInteger(0) }.incrementAndGet()
+            val senderName = extractSenderName(notification.extras ?: Bundle(), sbn)
+            val senderPhone = extractSenderPhone(notification.extras ?: Bundle(), senderName)
+            val sKey = senderKey(sbn.packageName, senderName, senderPhone)
+            senderLastReplyAt[sKey] = System.currentTimeMillis()
+            senderConsecutiveReplies.getOrPut(sKey) { AtomicInteger(0) }.incrementAndGet()
             true
         } catch (_: Throwable) {
             false
@@ -500,6 +596,7 @@ class ApexNotificationListener : NotificationListenerService() {
                     "packageName" to record.packageName,
                     "appName" to record.appName,
                     "senderName" to record.senderName,
+                    "senderPhone" to record.senderPhone,
                     "message" to record.messageText,
                     "timestamp" to System.currentTimeMillis().toString(),
                 )
@@ -511,11 +608,15 @@ class ApexNotificationListener : NotificationListenerService() {
         val appRules = Prefs.getJsonObject(this, Prefs.APP_RULES_JSON)
         val contactRules = Prefs.getJsonObject(this, Prefs.CONTACT_RULES_JSON)
         val senderLower = record.senderName.trim().lowercase()
+        val phoneNorm = normalizePhone(record.senderPhone).lowercase()
         val senderKeyFull = "${record.packageName.lowercase()}|$senderLower"
+        val senderPhoneKey = if (phoneNorm.isNotEmpty()) "${record.packageName.lowercase()}|$phoneNorm" else ""
         val appRule = appRules.optString(record.packageName, "")
         val contactRule = when {
             contactRules.has(senderKeyFull) -> contactRules.optString(senderKeyFull, "")
             contactRules.has(senderLower) -> contactRules.optString(senderLower, "")
+            senderPhoneKey.isNotEmpty() && contactRules.has(senderPhoneKey) -> contactRules.optString(senderPhoneKey, "")
+            phoneNorm.isNotEmpty() && contactRules.has(phoneNorm) -> contactRules.optString(phoneNorm, "")
             else -> ""
         }
         val customRule = listOf(appRule, contactRule).filter { it.isNotBlank() }.joinToString("\n")
@@ -523,6 +624,7 @@ class ApexNotificationListener : NotificationListenerService() {
         val payload = JSONObject().apply {
             put("appName", record.appName)
             put("senderName", record.senderName)
+            put("senderPhone", record.senderPhone)
             put("messageText", record.messageText)
             put("isGroup", record.isGroup)
             put("globalRule", globalRule)
@@ -547,6 +649,7 @@ class ApexNotificationListener : NotificationListenerService() {
                         "packageName" to record.packageName,
                         "appName" to record.appName,
                         "senderName" to record.senderName,
+                        "senderPhone" to record.senderPhone,
                         "message" to record.messageText,
                         "error" to (e.message ?: "network error"),
                         "timestamp" to System.currentTimeMillis().toString(),
@@ -565,6 +668,7 @@ class ApexNotificationListener : NotificationListenerService() {
                                 "packageName" to record.packageName,
                                 "appName" to record.appName,
                                 "senderName" to record.senderName,
+                                "senderPhone" to record.senderPhone,
                                 "message" to record.messageText,
                                 "error" to "HTTP ${it.code}",
                                 "timestamp" to System.currentTimeMillis().toString(),
@@ -584,6 +688,7 @@ class ApexNotificationListener : NotificationListenerService() {
                                     "packageName" to record.packageName,
                                     "appName" to record.appName,
                                     "senderName" to record.senderName,
+                                    "senderPhone" to record.senderPhone,
                                     "message" to record.messageText,
                                     "timestamp" to System.currentTimeMillis().toString(),
                                 )
@@ -605,6 +710,7 @@ class ApexNotificationListener : NotificationListenerService() {
                                     "packageName" to record.packageName,
                                     "appName" to record.appName,
                                     "senderName" to record.senderName,
+                                    "senderPhone" to record.senderPhone,
                                     "message" to record.messageText,
                                     "reply" to reply,
                                     "timestamp" to System.currentTimeMillis().toString(),
@@ -619,6 +725,7 @@ class ApexNotificationListener : NotificationListenerService() {
                                     "packageName" to record.packageName,
                                     "appName" to record.appName,
                                     "senderName" to record.senderName,
+                                    "senderPhone" to record.senderPhone,
                                     "message" to record.messageText,
                                     "reply" to reply,
                                     "timestamp" to System.currentTimeMillis().toString(),
@@ -633,6 +740,7 @@ class ApexNotificationListener : NotificationListenerService() {
                                 "packageName" to record.packageName,
                                 "appName" to record.appName,
                                 "senderName" to record.senderName,
+                                "senderPhone" to record.senderPhone,
                                 "message" to record.messageText,
                                 "error" to (e.message ?: "parse error"),
                                 "timestamp" to System.currentTimeMillis().toString(),
@@ -671,6 +779,7 @@ class ApexNotificationListener : NotificationListenerService() {
             notificationKey = record.key,
             packageName = record.packageName,
             senderName = record.senderName,
+            senderPhone = record.senderPhone,
             replyText = reply,
         )
         pendingApprovals[approvalId] = pending
@@ -690,7 +799,7 @@ class ApexNotificationListener : NotificationListenerService() {
         val approvePi = PendingIntent.getBroadcast(this, approvalId, approveIntent, flags)
         val dismissPi = PendingIntent.getBroadcast(this, approvalId + 1, dismissIntent, flags)
 
-        val content = "${record.appName} • ${record.senderName}\nIncoming: ${record.messageText}\nReply: $reply"
+        val content = "${record.appName} • ${record.senderName}${if (record.senderPhone.isNotEmpty()) " (${record.senderPhone})" else ""}\nIncoming: ${record.messageText}\nReply: $reply"
         val notification = NotificationCompat.Builder(this, AUTO_REPLY_CHANNEL_ID)
             .setSmallIcon(R.drawable.ic_stat_apex)
             .setContentTitle("Auto-reply approval needed")

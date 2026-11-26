@@ -390,11 +390,11 @@ class _UniversalAutoReplyScreenState extends State<UniversalAutoReplyScreen>
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            const Text('Contact Allowlist / Blocklist / Off',
+            const Text('Contact Name & Phone Number Allowlist / Blocklist',
                 style: TextStyle(fontSize: 16, fontWeight: FontWeight.w700)),
             const SizedBox(height: 4),
             const Text(
-              'Add sender names or identifiers. Allowlist restricts auto-replies to listed contacts when non-empty. Blocklist always blocks. Use contact modes below for per-contact allow/block/off.',
+              'Add contact names or phone numbers. Allowlist restricts auto-replies to listed contacts when non-empty. Blocklist always blocks. Use contact modes below for per-contact allow/block/off.',
               style: TextStyle(color: ApexAgentApp.muted, fontSize: 13),
             ),
             const SizedBox(height: 16),
@@ -441,7 +441,7 @@ class _UniversalAutoReplyScreenState extends State<UniversalAutoReplyScreen>
             Expanded(
               child: TextField(
                 controller: controller,
-                decoration: InputDecoration(hintText: 'Add $label entry'),
+                decoration: InputDecoration(hintText: 'Add $label name or phone number'),
                 onSubmitted: (_) => onAdd(),
               ),
             ),
@@ -556,8 +556,8 @@ class _UniversalAutoReplyScreenState extends State<UniversalAutoReplyScreen>
                 TextField(
                   controller: controller,
                   decoration: const InputDecoration(
-                    labelText: 'Sender name or package|sender',
-                    hintText: 'e.g., Alice or com.whatsapp|Alice',
+                    labelText: 'Contact name, phone number, or package|sender',
+                    hintText: 'e.g., Alice, +2348012345678, or com.whatsapp|Alice',
                   ),
                 ),
                 const SizedBox(height: 12),

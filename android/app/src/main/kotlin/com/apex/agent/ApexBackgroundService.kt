@@ -1,6 +1,6 @@
 package com.apex.agent
 
-import android.app.AlarmManager
+import android.Manifest
 import android.app.Notification
 import android.app.NotificationChannel
 import android.app.NotificationManager
@@ -8,11 +8,15 @@ import android.app.PendingIntent
 import android.app.Service
 import android.content.Context
 import android.content.Intent
+import android.content.pm.PackageManager
+import android.net.Uri
 import android.os.Build
 import android.os.IBinder
 import android.provider.AlarmClock
+import android.telephony.SmsManager
 import android.util.Log
 import androidx.core.app.NotificationCompat
+import androidx.core.content.ContextCompat
 import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.OkHttpClient
 import okhttp3.Request
@@ -20,6 +24,7 @@ import okhttp3.RequestBody.Companion.toRequestBody
 import org.json.JSONArray
 import org.json.JSONObject
 import java.io.IOException
+import java.net.URLEncoder
 import java.util.concurrent.TimeUnit
 
 class ApexBackgroundService : Service() {
@@ -185,6 +190,149 @@ class ApexBackgroundService : Service() {
 
         fun getNotes(context: Context): String {
             return Prefs.getJsonArray(context, Prefs.NOTES_JSON).toString()
+        }
+
+        fun makeCall(context: Context, phoneNumber: String): Boolean {
+            val normalized = normalizePhoneNumber(phoneNumber)
+            if (normalized.isEmpty()) return false
+            val hasCallPermission = ContextCompat.checkSelfPermission(
+                context, Manifest.permission.CALL_PHONE
+            ) == PackageManager.PERMISSION_GRANTED
+
+            return try {
+                if (hasCallPermission) {
+                    val intent = Intent(Intent.ACTION_CALL).apply {
+                        data = Uri.parse("tel:$normalized")
+                        addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                    }
+                    context.startActivity(intent)
+                    true
+                } else {
+                    val intent = Intent(Intent.ACTION_DIAL).apply {
+                        data = Uri.parse("tel:$normalized")
+                        addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                    }
+                    context.startActivity(intent)
+                    true
+                }
+            } catch (e: Throwable) {
+                Log.w(TAG, "Failed to make call, trying dial fallback", e)
+                try {
+                    val fallback = Intent(Intent.ACTION_DIAL).apply {
+                        data = Uri.parse("tel:$normalized")
+                        addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                    }
+                    context.startActivity(fallback)
+                    true
+                } catch (e2: Throwable) {
+                    Log.w(TAG, "Failed to make call", e2)
+                    false
+                }
+            }
+        }
+
+        fun sendSms(context: Context, phoneNumber: String, message: String): Boolean {
+            val normalized = normalizePhoneNumber(phoneNumber)
+            val body = message.trim()
+            if (normalized.isEmpty() || body.isEmpty()) return false
+
+            val hasSmsPermission = ContextCompat.checkSelfPermission(
+                context, Manifest.permission.SEND_SMS
+            ) == PackageManager.PERMISSION_GRANTED
+
+            if (hasSmsPermission) {
+                try {
+                    val smsManager = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+                        context.getSystemService(SmsManager::class.java)
+                    } else {
+                        @Suppress("DEPRECATION")
+                        SmsManager.getDefault()
+                    }
+                    val parts = smsManager.divideMessage(body)
+                    if (parts.size > 1) {
+                        smsManager.sendMultipartTextMessage(normalized, null, parts, null, null)
+                    } else {
+                        smsManager.sendTextMessage(normalized, null, body, null, null)
+                    }
+                    return true
+                } catch (e: Throwable) {
+                    Log.w(TAG, "SmsManager send failed, falling back to composer", e)
+                }
+            }
+
+            return try {
+                val intent = Intent(Intent.ACTION_SENDTO).apply {
+                    data = Uri.parse("smsto:$normalized")
+                    putExtra("sms_body", body)
+                    addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                }
+                context.startActivity(intent)
+                true
+            } catch (e: Throwable) {
+                Log.w(TAG, "Failed to send SMS", e)
+                false
+            }
+        }
+
+        fun openWhatsAppChat(context: Context, phoneNumber: String, message: String): Boolean {
+            val digits = normalizePhoneDigits(phoneNumber)
+            if (digits.isEmpty()) return false
+            val encodedMessage = try {
+                URLEncoder.encode(message.trim(), "UTF-8")
+            } catch (_: Throwable) {
+                message.trim().replace(" ", "%20")
+            }
+            val url = if (encodedMessage.isNotEmpty()) {
+                "https://wa.me/$digits?text=$encodedMessage"
+            } else {
+                "https://wa.me/$digits"
+            }
+
+            return try {
+                val intent = Intent(Intent.ACTION_VIEW).apply {
+                    data = Uri.parse(url)
+                    addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                    setPackage("com.whatsapp")
+                }
+                context.startActivity(intent)
+                true
+            } catch (_: Throwable) {
+                try {
+                    val intent = Intent(Intent.ACTION_VIEW).apply {
+                        data = Uri.parse(url)
+                        addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                        setPackage("com.whatsapp.w4b")
+                    }
+                    context.startActivity(intent)
+                    true
+                } catch (_: Throwable) {
+                    try {
+                        val intent = Intent(Intent.ACTION_VIEW).apply {
+                            data = Uri.parse(url)
+                            addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                        }
+                        context.startActivity(intent)
+                        true
+                    } catch (e: Throwable) {
+                        Log.w(TAG, "Failed to open WhatsApp chat", e)
+                        false
+                    }
+                }
+            }
+        }
+
+        fun normalizePhoneNumber(phoneNumber: String): String {
+            val trimmed = phoneNumber.trim()
+            if (trimmed.isEmpty()) return ""
+            val hasPlus = trimmed.startsWith("+")
+            val digits = trimmed.filter { it.isDigit() }
+            if (digits.isEmpty()) return ""
+            return if (hasPlus) "+$digits" else digits
+        }
+
+        fun normalizePhoneDigits(phoneNumber: String): String {
+            val normalized = normalizePhoneNumber(phoneNumber)
+            return normalized.removePrefix("+")
         }
     }
 

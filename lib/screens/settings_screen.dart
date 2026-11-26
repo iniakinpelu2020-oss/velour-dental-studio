@@ -15,10 +15,18 @@ class _SettingsScreenState extends State<SettingsScreen> {
   final _workerUrlController = TextEditingController();
   final _authTokenController = TextEditingController();
   final _modelIdController = TextEditingController();
+  final _customLlmController = TextEditingController();
+  final _businessPhoneController = TextEditingController();
+  final _countryCodeController = TextEditingController();
+  final _memoryContextController = TextEditingController();
 
   bool _loading = true;
   bool _saving = false;
   bool _obscureToken = true;
+  bool _voiceInputEnabled = false;
+  bool _speakRepliesEnabled = false;
+  bool _memoryEnabled = true;
+  double _ttsRate = 0.5;
 
   @override
   void initState() {
@@ -31,6 +39,10 @@ class _SettingsScreenState extends State<SettingsScreen> {
     _workerUrlController.dispose();
     _authTokenController.dispose();
     _modelIdController.dispose();
+    _customLlmController.dispose();
+    _businessPhoneController.dispose();
+    _countryCodeController.dispose();
+    _memoryContextController.dispose();
     super.dispose();
   }
 
@@ -38,11 +50,27 @@ class _SettingsScreenState extends State<SettingsScreen> {
     final workerUrl = await SettingsService.getWorkerUrl();
     final token = await SettingsService.getAuthToken();
     final modelId = await SettingsService.getModelId();
+    final customLlm = await SettingsService.getCustomLlmEndpoint();
+    final businessPhone = await SettingsService.getBusinessPhoneNumber();
+    final countryCode = await SettingsService.getDefaultCountryCode();
+    final voiceInput = await SettingsService.getVoiceInputEnabled();
+    final speakReplies = await SettingsService.getSpeakRepliesEnabled();
+    final ttsRate = await SettingsService.getTtsRate();
+    final memoryEnabled = await SettingsService.getMemoryEnabled();
+    final memoryContext = await SettingsService.getMemoryContext();
     if (!mounted) return;
     setState(() {
       _workerUrlController.text = workerUrl;
       _authTokenController.text = token;
       _modelIdController.text = modelId;
+      _customLlmController.text = customLlm;
+      _businessPhoneController.text = businessPhone;
+      _countryCodeController.text = countryCode;
+      _voiceInputEnabled = voiceInput;
+      _speakRepliesEnabled = speakReplies;
+      _ttsRate = ttsRate;
+      _memoryEnabled = memoryEnabled;
+      _memoryContextController.text = memoryContext;
       _loading = false;
     });
   }
@@ -54,6 +82,14 @@ class _SettingsScreenState extends State<SettingsScreen> {
       await SettingsService.setWorkerUrl(_workerUrlController.text);
       await SettingsService.setAuthToken(_authTokenController.text);
       await SettingsService.setModelId(_modelIdController.text);
+      await SettingsService.setCustomLlmEndpoint(_customLlmController.text);
+      await SettingsService.setBusinessPhoneNumber(_businessPhoneController.text);
+      await SettingsService.setDefaultCountryCode(_countryCodeController.text);
+      await SettingsService.setVoiceInputEnabled(_voiceInputEnabled);
+      await SettingsService.setSpeakRepliesEnabled(_speakRepliesEnabled);
+      await SettingsService.setTtsRate(_ttsRate);
+      await SettingsService.setMemoryEnabled(_memoryEnabled);
+      await SettingsService.setMemoryContext(_memoryContextController.text);
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(
@@ -64,6 +100,28 @@ class _SettingsScreenState extends State<SettingsScreen> {
     } finally {
       if (mounted) setState(() => _saving = false);
     }
+  }
+
+  Future<void> _clearMemory() async {
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        backgroundColor: ApexAgentApp.surface,
+        title: const Text('Clear persistent memory?'),
+        content: const Text('This will remove saved notes, bookings, contacts, and memory context from this device.'),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text('Cancel')),
+          ElevatedButton(onPressed: () => Navigator.pop(ctx, true), child: const Text('Clear')),
+        ],
+      ),
+    );
+    if (confirmed != true) return;
+    await SettingsService.clearMemory();
+    if (!mounted) return;
+    setState(() => _memoryContextController.clear());
+    ScaffoldMessenger.of(context).showSnackBar(
+      const SnackBar(content: Text('Persistent memory cleared')),
+    );
   }
 
   @override
@@ -91,9 +149,9 @@ class _SettingsScreenState extends State<SettingsScreen> {
                   child: Column(
                     children: [
                       _buildSectionCard(
-                        title: 'Cloudflare Worker',
+                        title: 'Cloudflare Worker / LLM',
                         subtitle:
-                            'Configure the backend endpoint used for agent tool-calling and auto-reply.',
+                            'Configure the backend endpoint used for agent tool-calling and auto-reply. Optionally override with a custom/local LLM endpoint.',
                         children: [
                           TextFormField(
                             controller: _workerUrlController,
@@ -106,7 +164,32 @@ class _SettingsScreenState extends State<SettingsScreen> {
                             autocorrect: false,
                             validator: (v) {
                               final value = (v ?? '').trim();
-                              if (value.isEmpty) return 'Worker URL is required';
+                              final custom = _customLlmController.text.trim();
+                              if (value.isEmpty && custom.isEmpty) {
+                                return 'Worker URL or custom LLM endpoint is required';
+                              }
+                              if (value.isNotEmpty) {
+                                final uri = Uri.tryParse(value);
+                                if (uri == null || !(uri.isScheme('http') || uri.isScheme('https'))) {
+                                  return 'Enter a valid http/https URL';
+                                }
+                              }
+                              return null;
+                            },
+                          ),
+                          const SizedBox(height: 12),
+                          TextFormField(
+                            controller: _customLlmController,
+                            decoration: const InputDecoration(
+                              labelText: 'Custom / Local LLM Endpoint Override (optional)',
+                              hintText: 'https://your-local-or-custom-endpoint',
+                              prefixIcon: Icon(Icons.dns_outlined),
+                            ),
+                            keyboardType: TextInputType.url,
+                            autocorrect: false,
+                            validator: (v) {
+                              final value = (v ?? '').trim();
+                              if (value.isEmpty) return null;
                               final uri = Uri.tryParse(value);
                               if (uri == null || !(uri.isScheme('http') || uri.isScheme('https'))) {
                                 return 'Enter a valid http/https URL';
@@ -146,6 +229,111 @@ class _SettingsScreenState extends State<SettingsScreen> {
                               if ((v ?? '').trim().isEmpty) return 'Model ID is required';
                               return null;
                             },
+                          ),
+                        ],
+                      ),
+                      const SizedBox(height: 16),
+                      _buildSectionCard(
+                        title: 'Agent / Business Identity',
+                        subtitle:
+                            'Used for receptionist/booking flows, SMS/WhatsApp reminders, and follow-ups.',
+                        children: [
+                          TextFormField(
+                            controller: _businessPhoneController,
+                            decoration: const InputDecoration(
+                              labelText: 'Agent/Business Phone Number',
+                              hintText: '+2348012345678',
+                              prefixIcon: Icon(Icons.phone_outlined),
+                            ),
+                            keyboardType: TextInputType.phone,
+                          ),
+                          const SizedBox(height: 12),
+                          TextFormField(
+                            controller: _countryCodeController,
+                            decoration: const InputDecoration(
+                              labelText: 'Default Country Code',
+                              hintText: '+234',
+                              prefixIcon: Icon(Icons.flag_outlined),
+                            ),
+                            keyboardType: TextInputType.phone,
+                          ),
+                        ],
+                      ),
+                      const SizedBox(height: 16),
+                      _buildSectionCard(
+                        title: 'Voice & TTS Preferences',
+                        subtitle: 'Control voice input and spoken agent replies.',
+                        children: [
+                          SwitchListTile.adaptive(
+                            contentPadding: EdgeInsets.zero,
+                            value: _voiceInputEnabled,
+                            activeColor: ApexAgentApp.accent,
+                            title: const Text('Enable Voice Input'),
+                            subtitle: const Text('Show microphone input in Agent Chat'),
+                            onChanged: (v) => setState(() => _voiceInputEnabled = v),
+                          ),
+                          SwitchListTile.adaptive(
+                            contentPadding: EdgeInsets.zero,
+                            value: _speakRepliesEnabled,
+                            activeColor: ApexAgentApp.accent,
+                            title: const Text('Speak Replies (TTS)'),
+                            subtitle: const Text('Read agent completion responses aloud'),
+                            onChanged: (v) => setState(() => _speakRepliesEnabled = v),
+                          ),
+                          const SizedBox(height: 8),
+                          Row(
+                            children: [
+                              const Expanded(child: Text('TTS Speech Rate', style: TextStyle(fontWeight: FontWeight.w600))),
+                              Text(_ttsRate.toStringAsFixed(2),
+                                  style: const TextStyle(color: ApexAgentApp.accent, fontWeight: FontWeight.w700)),
+                            ],
+                          ),
+                          Slider(
+                            value: _ttsRate,
+                            min: 0.2,
+                            max: 1.0,
+                            divisions: 8,
+                            label: _ttsRate.toStringAsFixed(2),
+                            activeColor: ApexAgentApp.accent,
+                            onChanged: (v) => setState(() => _ttsRate = v),
+                          ),
+                        ],
+                      ),
+                      const SizedBox(height: 16),
+                      _buildSectionCard(
+                        title: 'Persistent Memory',
+                        subtitle:
+                            'Store and reuse context, contacts, bookings, and follow-ups across agent turns.',
+                        children: [
+                          SwitchListTile.adaptive(
+                            contentPadding: EdgeInsets.zero,
+                            value: _memoryEnabled,
+                            activeColor: ApexAgentApp.accent,
+                            title: const Text('Enable Persistent Memory'),
+                            subtitle: const Text('Allow agent to use and update local memory/context'),
+                            onChanged: (v) => setState(() => _memoryEnabled = v),
+                          ),
+                          const SizedBox(height: 8),
+                          TextField(
+                            controller: _memoryContextController,
+                            minLines: 3,
+                            maxLines: 6,
+                            decoration: const InputDecoration(
+                              labelText: 'Memory Context / Business Notes',
+                              hintText: 'Business hours, services, booking rules, follow-up policies...',
+                            ),
+                          ),
+                          const SizedBox(height: 12),
+                          Row(
+                            children: [
+                              Expanded(
+                                child: OutlinedButton.icon(
+                                  onPressed: _clearMemory,
+                                  icon: const Icon(Icons.delete_outline),
+                                  label: const Text('Clear Memory'),
+                                ),
+                              ),
+                            ],
                           ),
                         ],
                       ),
@@ -250,12 +438,12 @@ class _SettingsScreenState extends State<SettingsScreen> {
             SizedBox(height: 8),
             _InfoRow(
               icon: Icons.smart_toy_outlined,
-              text: 'The default model is @hf/nousresearch/hermes-2-pro-mistral-7b. Change it only if your Worker supports it.',
+              text: 'Default model is @hf/nousresearch/hermes-2-pro-mistral-7b. Use a custom/local endpoint override only if it accepts the same agent payload.',
             ),
             SizedBox(height: 8),
             _InfoRow(
               icon: Icons.phonelink_setup_outlined,
-              text: 'Grant Accessibility, Notification Listener, and Background permissions for full functionality.',
+              text: 'Grant Accessibility, Notification Listener, Background, and Phone/SMS permissions for full functionality.',
             ),
           ],
         ),

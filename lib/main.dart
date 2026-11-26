@@ -3,6 +3,7 @@ import 'package:flutter/material.dart';
 import 'screens/agent_chat_screen.dart';
 import 'screens/settings_screen.dart';
 import 'screens/universal_auto_reply_screen.dart';
+import 'screens/workflow_builder_screen.dart';
 import 'services/platform_service.dart';
 
 void main() {
@@ -147,6 +148,7 @@ class _HomeShellState extends State<HomeShell> {
   Widget build(BuildContext context) {
     final screens = [
       const AgentChatScreen(),
+      const WorkflowBuilderScreen(),
       const UniversalAutoReplyScreen(),
       const SettingsScreen(),
     ];
@@ -161,6 +163,11 @@ class _HomeShellState extends State<HomeShell> {
             icon: Icon(Icons.smart_toy_outlined),
             selectedIcon: Icon(Icons.smart_toy),
             label: 'Agent',
+          ),
+          NavigationDestination(
+            icon: Icon(Icons.account_tree_outlined),
+            selectedIcon: Icon(Icons.account_tree),
+            label: 'Workflows',
           ),
           NavigationDestination(
             icon: Icon(Icons.reply_all_outlined),

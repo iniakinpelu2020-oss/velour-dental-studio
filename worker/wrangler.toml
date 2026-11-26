@@ -7,3 +7,12 @@ binding = "AI"
 
 [vars]
 DEFAULT_MODEL = "@hf/nousresearch/hermes-2-pro-mistral-7b"
+
+# Persistent memory/context storage (notes, contacts, bookings, follow-ups).
+# Create a KV namespace before deploying:
+#   wrangler kv namespace create MEMORY
+# Then set id and preview_id to the namespace ID returned by Wrangler.
+[[kv_namespaces]]
+binding = "MEMORY"
+id = "apex_memory_namespace_id"
+preview_id = "apex_memory_namespace_id"

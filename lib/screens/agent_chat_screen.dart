@@ -7,6 +7,7 @@ import '../main.dart';
 import '../models/agent_models.dart';
 import '../services/agent_service.dart';
 import '../services/platform_service.dart';
+import '../services/settings_service.dart';
 
 class AgentChatScreen extends StatefulWidget {
   const AgentChatScreen({super.key});
@@ -27,8 +28,17 @@ class _AgentChatScreenState extends State<AgentChatScreen> with WidgetsBindingOb
   bool _accessibilityEnabled = false;
   bool _notificationListenerEnabled = false;
   bool _backgroundRunning = false;
+  bool _phoneSmsGranted = false;
   bool _isRunning = false;
   int _screenActionCount = 0;
+
+  bool _voiceInputEnabled = false;
+  bool _speakRepliesEnabled = false;
+  bool _memoryEnabled = true;
+  bool _listening = false;
+
+  static const String _receptionistPreset =
+      'Receptionist / Booking & Follow-up mode: Act as a receptionist. Capture client name and phone number, confirm the booking service/date/time, save booking and context to memory, send SMS or WhatsApp reminders when appropriate, and schedule/perform post-visit follow-ups. Ask for missing booking details before confirming.';
 
   @override
   void initState() {
@@ -39,6 +49,7 @@ class _AgentChatScreenState extends State<AgentChatScreen> with WidgetsBindingOb
       onStateChanged: _onStateChanged,
       onConfirmation: _onConfirmation,
     );
+    _loadPrefs();
     _refreshStatus();
     _statusTimer = Timer.periodic(const Duration(seconds: 5), (_) => _refreshStatus());
   }
@@ -56,7 +67,20 @@ class _AgentChatScreenState extends State<AgentChatScreen> with WidgetsBindingOb
   void didChangeAppLifecycleState(AppLifecycleState state) {
     if (state == AppLifecycleState.resumed) {
       _refreshStatus();
+      _loadPrefs();
     }
+  }
+
+  Future<void> _loadPrefs() async {
+    final voice = await SettingsService.getVoiceInputEnabled();
+    final speak = await SettingsService.getSpeakRepliesEnabled();
+    final memory = await SettingsService.getMemoryEnabled();
+    if (!mounted) return;
+    setState(() {
+      _voiceInputEnabled = voice;
+      _speakRepliesEnabled = speak;
+      _memoryEnabled = memory;
+    });
   }
 
   Future<void> _refreshStatus() async {
@@ -66,6 +90,7 @@ class _AgentChatScreenState extends State<AgentChatScreen> with WidgetsBindingOb
       _accessibilityEnabled = status['accessibilityEnabled'] ?? false;
       _notificationListenerEnabled = status['notificationListenerEnabled'] ?? false;
       _backgroundRunning = status['backgroundServiceRunning'] ?? false;
+      _phoneSmsGranted = status['phoneSmsPermissionsGranted'] ?? false;
     });
   }
 
@@ -78,6 +103,15 @@ class _AgentChatScreenState extends State<AgentChatScreen> with WidgetsBindingOb
       }
     });
     _scrollToBottom();
+
+    if (_speakRepliesEnabled &&
+        (step.type == AgentStepType.done ||
+            (step.type == AgentStepType.assistant && step.detail.trim().isNotEmpty))) {
+      final text = step.detail.trim();
+      if (text.isNotEmpty) {
+        PlatformService.speakText(text);
+      }
+    }
   }
 
   void _onStateChanged(bool running) {
@@ -128,10 +162,10 @@ class _AgentChatScreenState extends State<AgentChatScreen> with WidgetsBindingOb
     });
   }
 
-  Future<void> _sendCommand() async {
-    final cmd = _commandController.text.trim();
+  Future<void> _sendCommand([String? preset]) async {
+    final cmd = (preset ?? _commandController.text).trim();
     if (cmd.isEmpty || _isRunning) return;
-    _commandController.clear();
+    if (preset == null) _commandController.clear();
     FocusScope.of(context).unfocus();
     await _agentService.runCommand(cmd);
   }
@@ -158,6 +192,106 @@ class _AgentChatScreenState extends State<AgentChatScreen> with WidgetsBindingOb
     await _refreshStatus();
   }
 
+  Future<void> _handlePhoneSmsTap() async {
+    await PlatformService.requestPhoneSmsPermissions();
+    await Future<void>.delayed(const Duration(milliseconds: 300));
+    await _refreshStatus();
+  }
+
+  Future<void> _toggleVoiceInput(bool value) async {
+    setState(() => _voiceInputEnabled = value);
+    await SettingsService.setVoiceInputEnabled(value);
+  }
+
+  Future<void> _toggleSpeakReplies(bool value) async {
+    setState(() => _speakRepliesEnabled = value);
+    await SettingsService.setSpeakRepliesEnabled(value);
+    if (!value) {
+      await PlatformService.stopSpeaking();
+    }
+  }
+
+  Future<void> _toggleMemory(bool value) async {
+    setState(() => _memoryEnabled = value);
+    await SettingsService.setMemoryEnabled(value);
+  }
+
+  Future<void> _listenForSpeech() async {
+    if (_isRunning || _listening) return;
+    final micGranted = await PlatformService.requestMicrophonePermission();
+    if (!micGranted) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Microphone permission is required for voice input.')),
+      );
+      return;
+    }
+    setState(() => _listening = true);
+    try {
+      final text = await PlatformService.listenForSpeech();
+      if (!mounted) return;
+      if (text.trim().isNotEmpty) {
+        setState(() {
+          _commandController.text = text.trim();
+          _commandController.selection = TextSelection.fromPosition(
+            TextPosition(offset: _commandController.text.length),
+          );
+        });
+      }
+    } finally {
+      if (mounted) setState(() => _listening = false);
+    }
+  }
+
+  Future<void> _showMemoryDialog() async {
+    final snapshot = await SettingsService.getMemorySnapshot();
+    final notes = (snapshot['notes'] as List?) ?? const [];
+    final bookings = (snapshot['bookings'] as List?) ?? const [];
+    final contacts = (snapshot['contacts'] as List?) ?? const [];
+    final context = snapshot['context']?.toString() ?? '';
+    if (!mounted) return;
+    await showDialog<void>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        backgroundColor: ApexAgentApp.surface,
+        title: const Text('Shared Memory Context'),
+        content: SingleChildScrollView(
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Text('Notes: ${notes.length}', style: const TextStyle(fontWeight: FontWeight.w600)),
+              Text('Bookings: ${bookings.length}', style: const TextStyle(fontWeight: FontWeight.w600)),
+              Text('Contacts: ${contacts.length}', style: const TextStyle(fontWeight: FontWeight.w600)),
+              const SizedBox(height: 12),
+              const Text('Context', style: TextStyle(fontWeight: FontWeight.w700)),
+              const SizedBox(height: 4),
+              Text(context.isEmpty ? '(empty)' : context, style: const TextStyle(color: ApexAgentApp.muted)),
+              if (bookings.isNotEmpty) ...[
+                const SizedBox(height: 12),
+                const Text('Recent bookings', style: TextStyle(fontWeight: FontWeight.w700)),
+                const SizedBox(height: 4),
+                ...bookings.reversed.take(5).map((b) {
+                  final m = b is Map ? b : {};
+                  return Padding(
+                    padding: const EdgeInsets.only(bottom: 6),
+                    child: Text(
+                      '- ${m['clientName'] ?? 'Client'} | ${m['phoneNumber'] ?? ''} | ${m['service'] ?? ''} | ${m['dateTime'] ?? ''} | ${m['status'] ?? ''}',
+                      style: const TextStyle(color: ApexAgentApp.muted, fontSize: 12),
+                    ),
+                  );
+                }),
+              ],
+            ],
+          ),
+        ),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(ctx), child: const Text('Close')),
+        ],
+      ),
+    );
+  }
+
   void _clearLog() {
     setState(() {
       _steps.clear();
@@ -172,8 +306,16 @@ class _AgentChatScreenState extends State<AgentChatScreen> with WidgetsBindingOb
         title: const Text('Agent Chat & Live Execution'),
         actions: [
           IconButton(
+            tooltip: 'Memory',
+            onPressed: _showMemoryDialog,
+            icon: const Icon(Icons.memory_outlined),
+          ),
+          IconButton(
             tooltip: 'Refresh status',
-            onPressed: _refreshStatus,
+            onPressed: () {
+              _refreshStatus();
+              _loadPrefs();
+            },
             icon: const Icon(Icons.refresh),
           ),
           IconButton(
@@ -192,6 +334,11 @@ class _AgentChatScreenState extends State<AgentChatScreen> with WidgetsBindingOb
           Padding(
             padding: const EdgeInsets.symmetric(horizontal: 16),
             child: _buildRoutingBanner(),
+          ),
+          const SizedBox(height: 8),
+          Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 16),
+            child: _buildTogglesAndPresets(),
           ),
           const SizedBox(height: 8),
           Expanded(child: _buildLog()),
@@ -224,6 +371,12 @@ class _AgentChatScreenState extends State<AgentChatScreen> with WidgetsBindingOb
           icon: Icons.miscellaneous_services_outlined,
           onTap: _handleBackgroundTap,
         ),
+        _StatusPill(
+          label: 'Phone/SMS',
+          enabled: _phoneSmsGranted,
+          icon: Icons.phone_in_talk_outlined,
+          onTap: _handlePhoneSmsTap,
+        ),
       ],
     );
   }
@@ -243,7 +396,7 @@ class _AgentChatScreenState extends State<AgentChatScreen> with WidgetsBindingOb
           const SizedBox(width: 8),
           const Expanded(
             child: Text(
-              'Silent-first routing • Screen actions capped at 10 steps',
+              'Silent-first routing • Shared memory • Screen actions capped at 10 steps',
               style: TextStyle(fontSize: 12, color: ApexAgentApp.muted),
             ),
           ),
@@ -269,6 +422,73 @@ class _AgentChatScreenState extends State<AgentChatScreen> with WidgetsBindingOb
     );
   }
 
+  Widget _buildTogglesAndPresets() {
+    return Card(
+      child: Padding(
+        padding: const EdgeInsets.all(12),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Wrap(
+              spacing: 8,
+              runSpacing: 8,
+              children: [
+                FilterChip(
+                  label: const Text('Voice Input'),
+                  selected: _voiceInputEnabled,
+                  onSelected: _toggleVoiceInput,
+                  avatar: const Icon(Icons.mic_none, size: 18),
+                ),
+                FilterChip(
+                  label: const Text('Speak Replies'),
+                  selected: _speakRepliesEnabled,
+                  onSelected: _toggleSpeakReplies,
+                  avatar: const Icon(Icons.volume_up_outlined, size: 18),
+                ),
+                FilterChip(
+                  label: const Text('Memory'),
+                  selected: _memoryEnabled,
+                  onSelected: _toggleMemory,
+                  avatar: const Icon(Icons.memory_outlined, size: 18),
+                ),
+              ],
+            ),
+            const SizedBox(height: 10),
+            const Text('Quick presets', style: TextStyle(fontWeight: FontWeight.w700, fontSize: 13)),
+            const SizedBox(height: 8),
+            Wrap(
+              spacing: 8,
+              runSpacing: 8,
+              children: [
+                ActionChip(
+                  avatar: const Icon(Icons.support_agent_outlined, size: 18),
+                  label: const Text('Receptionist / Booking & Follow-up'),
+                  onPressed: _isRunning ? null : () => _sendCommand(_receptionistPreset),
+                ),
+                ActionChip(
+                  avatar: const Icon(Icons.sms_outlined, size: 18),
+                  label: const Text('Send SMS reminder'),
+                  onPressed: _isRunning
+                      ? null
+                      : () => _commandController.text =
+                          'Send an SMS reminder to a client. Ask me for client name, phone number, and message if missing.',
+                ),
+                ActionChip(
+                  avatar: const Icon(Icons.chat_outlined, size: 18),
+                  label: const Text('WhatsApp follow-up'),
+                  onPressed: _isRunning
+                      ? null
+                      : () => _commandController.text =
+                          'Open WhatsApp and send a post-visit follow-up. Ask me for client name, phone number, and message if missing.',
+                ),
+              ],
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
   Widget _buildLog() {
     if (_steps.isEmpty) {
       return Center(
@@ -285,7 +505,7 @@ class _AgentChatScreenState extends State<AgentChatScreen> with WidgetsBindingOb
               ),
               SizedBox(height: 8),
               Text(
-                'Enter a command below. The agent will prefer silent background tools before screen UI tools.',
+                'Enter a command, use a preset, or tap the mic. The agent prefers silent background tools before screen UI tools.',
                 textAlign: TextAlign.center,
                 style: TextStyle(color: ApexAgentApp.muted),
               ),
@@ -337,6 +557,25 @@ class _AgentChatScreenState extends State<AgentChatScreen> with WidgetsBindingOb
             ),
           Row(
             children: [
+              if (_voiceInputEnabled)
+                Padding(
+                  padding: const EdgeInsets.only(right: 8),
+                  child: SizedBox(
+                    height: 52,
+                    width: 52,
+                    child: OutlinedButton(
+                      onPressed: (_isRunning || _listening) ? null : _listenForSpeech,
+                      style: OutlinedButton.styleFrom(padding: EdgeInsets.zero),
+                      child: _listening
+                          ? const SizedBox(
+                              width: 20,
+                              height: 20,
+                              child: CircularProgressIndicator(strokeWidth: 2),
+                            )
+                          : const Icon(Icons.mic_none),
+                    ),
+                  ),
+                ),
               Expanded(
                 child: TextField(
                   controller: _commandController,
@@ -356,7 +595,7 @@ class _AgentChatScreenState extends State<AgentChatScreen> with WidgetsBindingOb
                 height: 52,
                 width: 52,
                 child: ElevatedButton(
-                  onPressed: _isRunning ? null : _sendCommand,
+                  onPressed: _isRunning ? null : () => _sendCommand(),
                   style: ElevatedButton.styleFrom(padding: EdgeInsets.zero),
                   child: _isRunning
                       ? const SizedBox(

@@ -96,7 +96,7 @@ class PlatformService {
     }
   }
 
-  // Background / notifications
+  // Background / notifications / phone / tts
   static Future<bool> isNotificationListenerEnabled() async {
     try {
       return await _background.invokeMethod<bool>('isNotificationListenerEnabled') ??
@@ -268,6 +268,7 @@ class PlatformService {
         'notificationListenerEnabled': raw['notificationListenerEnabled'] == true,
         'backgroundServiceRunning': raw['backgroundServiceRunning'] == true,
         'ignoringBatteryOptimizations': raw['ignoringBatteryOptimizations'] == true,
+        'phoneSmsPermissionsGranted': raw['phoneSmsPermissionsGranted'] == true,
       };
     } catch (_) {
       return _fallbackStatus();
@@ -282,10 +283,103 @@ class PlatformService {
     }
   }
 
+  static Future<Map<String, bool>> getPhoneSmsPermissionStatus() async {
+    try {
+      final raw = await _background.invokeMethod<Map<dynamic, dynamic>>('getPhoneSmsPermissionStatus');
+      if (raw == null) return {'allGranted': false};
+      return raw.map((k, v) => MapEntry(k.toString(), v == true));
+    } catch (_) {
+      return {'allGranted': false};
+    }
+  }
+
+  static Future<Map<String, bool>> requestPhoneSmsPermissions() async {
+    try {
+      final raw = await _background.invokeMethod<Map<dynamic, dynamic>>('requestPhoneSmsPermissions');
+      if (raw == null) return {'allGranted': false};
+      return raw.map((k, v) => MapEntry(k.toString(), v == true));
+    } catch (_) {
+      return {'allGranted': false};
+    }
+  }
+
+  static Future<bool> makeCall(String phoneNumber) async {
+    try {
+      return await _background.invokeMethod<bool>('makeCall', {'phoneNumber': phoneNumber}) ?? false;
+    } catch (_) {
+      return false;
+    }
+  }
+
+  static Future<bool> sendSms({required String phoneNumber, required String message}) async {
+    try {
+      return await _background.invokeMethod<bool>('sendSms', {
+            'phoneNumber': phoneNumber,
+            'message': message,
+          }) ??
+          false;
+    } catch (_) {
+      return false;
+    }
+  }
+
+  static Future<bool> openWhatsAppChat({required String phoneNumber, String message = ''}) async {
+    try {
+      return await _background.invokeMethod<bool>('openWhatsAppChat', {
+            'phoneNumber': phoneNumber,
+            'message': message,
+          }) ??
+          false;
+    } catch (_) {
+      return false;
+    }
+  }
+
+  static Future<bool> speakText(String text) async {
+    try {
+      return await _background.invokeMethod<bool>('speakText', {'text': text}) ?? false;
+    } catch (_) {
+      return false;
+    }
+  }
+
+  static Future<bool> stopSpeaking() async {
+    try {
+      return await _background.invokeMethod<bool>('stopSpeaking') ?? false;
+    } catch (_) {
+      return false;
+    }
+  }
+
+  static Future<bool> isMicrophonePermissionGranted() async {
+    try {
+      return await _background.invokeMethod<bool>('isMicrophonePermissionGranted') ?? false;
+    } catch (_) {
+      return false;
+    }
+  }
+
+  static Future<bool> requestMicrophonePermission() async {
+    try {
+      return await _background.invokeMethod<bool>('requestMicrophonePermission') ?? false;
+    } catch (_) {
+      return false;
+    }
+  }
+
+  static Future<String> listenForSpeech() async {
+    try {
+      return await _background.invokeMethod<String>('listenForSpeech') ?? '';
+    } catch (_) {
+      return '';
+    }
+  }
+
   static Map<String, bool> _fallbackStatus() => {
         'accessibilityEnabled': false,
         'notificationListenerEnabled': false,
         'backgroundServiceRunning': false,
         'ignoringBatteryOptimizations': false,
+        'phoneSmsPermissionsGranted': false,
       };
 }
