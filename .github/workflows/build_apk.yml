@@ -41,22 +41,24 @@ jobs:
       - name: Install dependencies
         run: flutter pub get
 
-      - name: Build release APK
-        run: flutter build apk --release
-
       - name: Build debug APK
         run: flutter build apk --debug
 
-      - name: Upload release APK artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: app-release-apk
-          path: build/app/outputs/flutter-apk/app-release.apk
-          if-no-files-found: error
-
       - name: Upload debug APK artifact
+        if: always()
         uses: actions/upload-artifact@v4
         with:
           name: app-debug-apk
           path: build/app/outputs/flutter-apk/app-debug.apk
-          if-no-files-found: error
+          if-no-files-found: warn
+
+      - name: Build release APK
+        run: flutter build apk --release
+
+      - name: Upload release APK artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: app-release-apk
+          path: build/app/outputs/flutter-apk/app-release.apk
+          if-no-files-found: warn

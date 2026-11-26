@@ -248,7 +248,7 @@ class _AgentChatScreenState extends State<AgentChatScreen> with WidgetsBindingOb
     final notes = (snapshot['notes'] as List?) ?? const [];
     final bookings = (snapshot['bookings'] as List?) ?? const [];
     final contacts = (snapshot['contacts'] as List?) ?? const [];
-    final context = snapshot['context']?.toString() ?? '';
+    final memoryContext = snapshot['context']?.toString() ?? '';
     if (!mounted) return;
     await showDialog<void>(
       context: context,
@@ -266,7 +266,7 @@ class _AgentChatScreenState extends State<AgentChatScreen> with WidgetsBindingOb
               const SizedBox(height: 12),
               const Text('Context', style: TextStyle(fontWeight: FontWeight.w700)),
               const SizedBox(height: 4),
-              Text(context.isEmpty ? '(empty)' : context, style: const TextStyle(color: ApexAgentApp.muted)),
+              Text(memoryContext.isEmpty ? '(empty)' : memoryContext, style: const TextStyle(color: ApexAgentApp.muted)),
               if (bookings.isNotEmpty) ...[
                 const SizedBox(height: 12),
                 const Text('Recent bookings', style: TextStyle(fontWeight: FontWeight.w700)),
