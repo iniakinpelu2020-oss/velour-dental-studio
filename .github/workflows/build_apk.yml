@@ -38,6 +38,29 @@ jobs:
       - name: Accept Android licenses
         run: yes | flutter doctor --android-licenses || true
 
+      - name: Generate deterministic release keystore
+        run: |
+          set -euo pipefail
+          KEYSTORE_PATH="android/app/release.jks"
+          KEY_PROPERTIES_PATH="android/key.properties"
+          if [ ! -f "$KEYSTORE_PATH" ]; then
+            keytool -genkeypair -v \
+              -keystore "$KEYSTORE_PATH" \
+              -storetype JKS \
+              -keyalg RSA \
+              -keysize 2048 \
+              -validity 10000 \
+              -alias apex-release \
+              -storepass apexagent-release \
+              -keypass apexagent-release \
+              -dname "CN=Apex Agent, OU=Apex, O=Apex, L=Lagos, ST=Lagos, C=NG"
+          fi
+          printf '%s\n' \
+            'storePassword=apexagent-release' \
+            'keyPassword=apexagent-release' \
+            'keyAlias=apex-release' \
+            'storeFile=release.jks' > "$KEY_PROPERTIES_PATH"
+
       - name: Install dependencies
         run: flutter pub get
 
