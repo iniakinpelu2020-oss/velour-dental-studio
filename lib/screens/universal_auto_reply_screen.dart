@@ -652,7 +652,7 @@ class _UniversalAutoReplyScreenState extends State<UniversalAutoReplyScreen>
   }
 
   Widget _buildAppsCard() {
-    final query = _appSearchController.text.trim().lowercase();
+    final query = _appSearchController.text.trim().toLowerCase();
     final filtered = _installedApps.where((app) {
       if (query.isEmpty) return true;
       final name = (app['appName'] ?? '').toLowerCase();
