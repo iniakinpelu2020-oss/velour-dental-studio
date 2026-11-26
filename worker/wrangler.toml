@@ -1,0 +1,15 @@
+name = "velour-dental-studio"
+main = "index.js"
+compatibility_date = "2026-11-26"
+workers_dev = true
+
+# Workers AI binding -> available in code as env.AI
+[ai]
+binding = "AI"
+
+[observability]
+enabled = true
+
+# AUTH_TOKEN is a secret, not a var. Set it with:
+#   npx wrangler secret put AUTH_TOKEN --config worker/wrangler.toml
+# or in the dashboard: Worker -> Settings -> Variables and Secrets
